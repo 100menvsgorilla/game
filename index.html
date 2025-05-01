@@ -11,72 +11,45 @@
             display: flex;
             flex-direction: column;
             align-items: center;
+            justify-content: center;
             height: 100vh;
             background-color: #2c3e50;
             overflow: hidden;
+            font-family: Arial, sans-serif;
         }
         #stats-bar {
-            position: fixed;
-            top: 0;
             width: 100%;
             background-color: rgba(0, 0, 0, 0.8);
             color: white;
             text-align: center;
-            padding: 10px 0;
-            font-family: Arial, sans-serif;
-            font-size: clamp(12px, 2.5vw, 16px);
+            padding: 8px 0;
+            font-size: clamp(10px, 3vw, 14px);
             font-weight: bold;
+            position: fixed;
+            top: 0;
             z-index: 1000;
         }
         canvas {
             border: 2px solid #ffffff;
-            margin-top: 40px;
             max-width: 100%;
             max-height: calc(100vh - 40px);
-        }
-        @media (orientation: portrait) {
-            body::before {
-                content: "Please rotate your device to landscape mode for the best experience.";
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: rgba(0, 0, 0, 0.8);
-                color: white;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                text-align: center;
-                z-index: 1001;
-                font-size: 18px;
-                padding: 20px;
-            }
+            margin-top: 40px;
+            touch-action: none;
         }
     </style>
 </head>
 <body>
     <div id="stats-bar">Gorillas: 0 | Men: 0 | Level: 1 | Tap to move, drag to select</div>
 <script>
-// Log script start for debugging
 console.log("Game script started");
 
-// Global error handler
 window.onerror = function (msg, url, lineNo, columnNo, error) {
-    console.error("Script error details:", {
-        message: msg,
-        url: url,
-        line: lineNo,
-        columnNo: columnNo,
-        stack: error ? error.stack : 'No stack trace',
-        context: 'Global error handler'
-    });
+    console.error("Script error:", { message: msg, url, lineNo, columnNo, stack: error?.stack });
     return false;
 };
 
-// Check if running on file://
 if (window.location.protocol === 'file:') {
-    console.warn("Running via file:// may cause issues. Use a local server (e.g., python -m http.server 8000 or npx serve).");
+    console.warn("Running via file:// may cause issues. Use a local server (e.g., python -m http.server 8000).");
 }
 
 let men = [];
@@ -93,9 +66,9 @@ let quadTree = null;
 let isPaused = false;
 let quadTreeNeedsUpdate = false;
 let textSizeFactor = 1;
-let useRectangularSelection = /Mobi|Android/i.test(navigator.userAgent) ? false : false;
-const BRUSH_RADIUS = /Mobi|Android/i.test(navigator.userAgent) ? 100 : 75;
-const NEARBY_RADIUS = 100;
+let useRectangularSelection = false;
+const BRUSH_RADIUS = /Mobi|Android/i.test(navigator.userAgent) ? 80 : 60;
+const NEARBY_RADIUS = 80;
 const STATS_BAR_HEIGHT = 40;
 
 const LEVELS = [
@@ -106,71 +79,48 @@ const LEVELS = [
     { men: 20, gorillas: [{ type: 'standard', count: 3 }, { type: 'tank', count: 2 }] }
 ];
 
-const MAN_SIZE = 8;
-const GORILLA_SIZE = 50;
-const OBSTACLE_SIZE = 20;
-const MAN_SPEED = 100;
-const GORILLA_SPEED = { standard: 80, tank: 60 };
+const MAN_SIZE = 6;
+const GORILLA_SIZE = 40;
+const OBSTACLE_SIZE = 15;
+const MAN_SPEED = 80;
+const GORILLA_SPEED = { standard: 60, tank: 45 };
 const GORILLA_TURN_SPEED = 0.02;
-const MAN_ATTACK_RANGE = 15;
+const MAN_ATTACK_RANGE = 12;
 const MAN_ATTACK_COOLDOWN = 60;
-const MAN_DAMAGE = 8;
-const MAN_HEALTH = 10;
+const MAN_DAMAGE = 6;
+const MAN_HEALTH = 8;
 const GORILLA_ATTACK_RANGE = GORILLA_SIZE / 2 + MAN_SIZE / 2;
 const GORILLA_ATTACK_COOLDOWN = 30;
-const GORILLA_DAMAGE = 10;
-const GORILLA_HEALTH = { standard: 500, tank: 750 };
-const LOOKAHEAD_DISTANCE = 75;
+const GORILLA_DAMAGE = 8;
+const GORILLA_HEALTH = { standard: 400, tank: 600 };
+const LOOKAHEAD_DISTANCE = 60;
 const DAMAGE_TEXT_DURATION = 30;
 const TRANSITION_DELAY = 120;
 
 function setup() {
     try {
-        if (typeof p5 === 'undefined' || !window.createCanvas || !window.createVector) {
-            throw new Error("p5.js is not loaded or missing required functions. Check CDN or use a local copy.");
+        if (typeof p5 === 'undefined' || !window.createCanvas) {
+            throw new Error("p5.js not loaded or missing functions.");
         }
-        let canvas = createCanvas(windowWidth, windowHeight - STATS_BAR_HEIGHT);
+        let canvasWidth = min(windowWidth, 400);
+        let canvasHeight = windowHeight - STATS_BAR_HEIGHT;
+        let canvas = createCanvas(canvasWidth, canvasHeight);
         canvas.elt.addEventListener('contextmenu', (e) => e.preventDefault());
-        quadTree = new QuadTree({ x: 0, y: 0, width: width, height: height }, 4);
-        textSizeFactor = min(width, height) / 600;
-        canvas.elt.addEventListener('touchstart', lockOrientation, { once: true });
+        quadTree = new QuadTree({ x: 0, y: 0, width: canvasWidth, height: canvasHeight }, 4);
+        textSizeFactor = min(canvasWidth, canvasHeight) / 600;
     } catch (e) {
         console.error("Setup error:", e);
         noLoop();
     }
 }
 
-function lockOrientation() {
-    try {
-        const goFullscreen = () => {
-            const elem = document.documentElement;
-            if (elem.requestFullscreen) {
-                return elem.requestFullscreen();
-            } else if (elem.webkitRequestFullscreen) { // Safari
-                return elem.webkitRequestFullscreen();
-            } else if (elem.msRequestFullscreen) { // IE11
-                return elem.msRequestFullscreen();
-            }
-            return Promise.resolve();
-        };
-
-        goFullscreen().then(() => {
-            if (screen.orientation && screen.orientation.lock) {
-                screen.orientation.lock('landscape').catch(err => console.log("Orientation lock failed:", err));
-            }
-            // Ensure canvas resizes after fullscreen
-            windowResized();
-        }).catch(err => console.log("Fullscreen request failed:", err));
-    } catch (e) {
-        console.error("lockOrientation error:", e);
-    }
-}
-
 function windowResized() {
     try {
-        resizeCanvas(windowWidth, windowHeight - STATS_BAR_HEIGHT);
-        quadTree = new QuadTree({ x: 0, y: 0, width: width, height: height }, 4);
-        textSizeFactor = min(width, height) / 600;
+        let canvasWidth = min(windowWidth, 400);
+        let canvasHeight = windowHeight - STATS_BAR_HEIGHT;
+        resizeCanvas(canvasWidth, canvasHeight);
+        quadTree = new QuadTree({ x: 0, y: 0, width: canvasWidth, height: canvasHeight }, 4);
+        textSizeFactor = min(canvasWidth, canvasHeight) / 600;
         quadTreeNeedsUpdate = true;
     } catch (e) {
         console.error("windowResized error:", e);
@@ -180,17 +130,17 @@ function windowResized() {
 function startLevel(level) {
     try {
         if (!Number.isInteger(level) || level < 1 || level > LEVELS.length) {
-            throw new Error(`Invalid level: ${level}. Must be between 1 and ${LEVELS.length}.`);
+            throw new Error(`Invalid level: ${level}.`);
         }
         if (width <= 0 || height <= 0) {
-            throw new Error("Canvas dimensions are invalid. Width: " + width + ", Height: " + height);
+            throw new Error("Invalid canvas dimensions.");
         }
 
         men = [];
         gorillas = [];
         obstacles = [];
 
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 4; i++) {
             let pos;
             let attempts = 0;
             const maxAttempts = 1000;
@@ -199,13 +149,12 @@ function startLevel(level) {
                 attempts++;
             } while (obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < OBSTACLE_SIZE * 2) && attempts < maxAttempts);
             if (attempts >= maxAttempts) {
-                console.warn(`Obstacle (tree) placement failed after ${maxAttempts} attempts. Using fallback position.`);
                 pos = createVector(OBSTACLE_SIZE + i * OBSTACLE_SIZE * 2, OBSTACLE_SIZE);
             }
             obstacles.push({ x: pos.x, y: pos.y, type: 'tree', r: OBSTACLE_SIZE });
         }
 
-        for (let i = 0; i < 5; i++) {
+        for (let i = 0; i < 4; i++) {
             let pos;
             let attempts = 0;
             const maxAttempts = 1000;
@@ -214,8 +163,7 @@ function startLevel(level) {
                 attempts++;
             } while (obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < OBSTACLE_SIZE * 2) && attempts < maxAttempts);
             if (attempts >= maxAttempts) {
-                console.warn(`Obstacle (rock) placement failed after ${maxAttempts} attempts. Using fallback position.`);
-                pos = createVector(OBSTACLE_SIZE + (i + 5) * OBSTACLE_SIZE * 2, OBSTACLE_SIZE);
+                pos = createVector(OBSTACLE_SIZE + (i + 4) * OBSTACLE_SIZE * 2, OBSTACLE_SIZE);
             }
             obstacles.push({ x: pos.x, y: pos.y, type: 'rock', r: OBSTACLE_SIZE });
         }
@@ -257,7 +205,7 @@ function startLevel(level) {
         let spawnGridGorillas = [];
         let gorillaIndex = 0;
         for (let config of gorillaConfigs) {
-            if (!config.type || !GORILLA_HEALTH[config.type]) {
+            if (!GORILLA_HEALTH[config.type]) {
                 throw new Error(`Invalid gorilla type: ${config.type}`);
             }
             for (let i = 0; i < config.count; i++) {
@@ -304,11 +252,7 @@ function startLevel(level) {
         quadTreeNeedsUpdate = true;
         loop();
     } catch (e) {
-        console.error("startLevel error:", {
-            level: level,
-            message: e.message,
-            stack: e.stack
-        });
+        console.error("startLevel error:", e);
         noLoop();
     }
 }
@@ -343,15 +287,15 @@ function draw() {
         }
 
         if (gameState === 'tutorial') {
-            textSize(24 * textSizeFactor);
+            textSize(20 * textSizeFactor);
             textAlign(CENTER);
             fill(255);
-            text("100 Men vs Gorillas", width / 2, height / 2 - 100 * textSizeFactor);
-            textSize(16 * textSizeFactor);
-            text("Tap to move all men, or drag to select and move.", width / 2, height / 2 - 50 * textSizeFactor);
-            text("Right-click or two-finger tap to move nearby men.", width / 2, height / 2 - 30 * textSizeFactor);
-            text("Defeat all gorillas to win!", width / 2, height / 2 - 10 * textSizeFactor);
-            text("Tap to Start", width / 2, height / 2 + 50 * textSizeFactor);
+            text("100 Men vs Gorillas", width / 2, height / 2 - 80 * textSizeFactor);
+            textSize(14 * textSizeFactor);
+            text("Tap to move all men.", width / 2, height / 2 - 40 * textSizeFactor);
+            text("Drag to select and move.", width / 2, height / 2 - 20 * textSizeFactor);
+            text("Defeat all gorillas to win!", width / 2, height / 2);
+            text("Tap to Start", width / 2, height / 2 + 40 * textSizeFactor);
         } else if (gameState === 'playing') {
             for (let gorilla of gorillas) {
                 gorilla.update();
@@ -380,25 +324,18 @@ function draw() {
             if (isSelecting && startPos && currentPos) {
                 stroke(0);
                 strokeWeight(2);
-                if (useRectangularSelection) {
-                    fill(0, 0, 255, 50);
-                    rect(startPos.x, startPos.y, currentPos.x - startPos.x, currentPos.y - startPos.y);
-                } else {
-                    fill(0, 0, 255, 100);
-                    ellipse(currentPos.x, currentPos.y, BRUSH_RADIUS * 2 + sin(frameCount * 0.1) * 10);
-                }
+                fill(0, 0, 255, 100);
+                ellipse(currentPos.x, currentPos.y, BRUSH_RADIUS * 2 + sin(frameCount * 0.1) * 8);
                 noStroke();
                 noFill();
             }
-
-            drawUI();
         } else if (gameState === 'transition') {
-            textSize(32 * textSizeFactor);
+            textSize(28 * textSizeFactor);
             textAlign(CENTER);
             fill(255);
-            text(`Level ${currentLevel} Complete!`, width / 2, height / 2 - 50 * textSizeFactor);
-            textSize(20 * textSizeFactor);
-            text("Preparing Next Level...", width / 2, height / 2 + 35 * textSizeFactor);
+            text(`Level ${currentLevel} Complete!`, width / 2, height / 2 - 40 * textSizeFactor);
+            textSize(16 * textSizeFactor);
+            text("Preparing Next Level...", width / 2, height / 2 + 20 * textSizeFactor);
             if (transitionTimer > 0) {
                 transitionTimer--;
             } else {
@@ -407,7 +344,7 @@ function draw() {
                 loadingTimer = 60;
             }
         } else if (gameState === 'loading') {
-            textSize(32 * textSizeFactor);
+            textSize(28 * textSizeFactor);
             textAlign(CENTER);
             fill(255);
             text("Loading...", width / 2, height / 2);
@@ -417,18 +354,18 @@ function draw() {
                 startLevel(currentLevel);
             }
         } else if (gameState === 'gameOver') {
-            textSize(32 * textSizeFactor);
+            textSize(28 * textSizeFactor);
             textAlign(CENTER);
             fill(255);
-            text("Game Over!", width / 2, height / 2 - 50 * textSizeFactor);
+            text("Game Over!", width / 2, height / 2 - 40 * textSizeFactor);
             fill(150);
-            rect(width / 2 - 100 * textSizeFactor, height / 2, 200 * textSizeFactor, 50 * textSizeFactor);
+            rect(width / 2 - 80 * textSizeFactor, height / 2, 160 * textSizeFactor, 40 * textSizeFactor);
             fill(0);
-            textSize(20 * textSizeFactor);
-            text("Retry", width / 2, height / 2 + 35 * textSizeFactor);
+            textSize(16 * textSizeFactor);
+            text("Retry", width / 2, height / 2 + 25 * textSizeFactor);
             if (transitionTimer > 0) transitionTimer--;
         } else if (gameState === 'victory') {
-            textSize(32 * textSizeFactor);
+            textSize(28 * textSizeFactor);
             textAlign(CENTER);
             fill(255);
             text("Victory! All Levels Complete!", width / 2, height / 2);
@@ -440,19 +377,17 @@ function draw() {
     }
 }
 
-function drawUI() {}
-
 function drawPauseMenu() {
     try {
         background(34, 139, 34, 200);
-        textSize(32 * textSizeFactor);
+        textSize(28 * textSizeFactor);
         textAlign(CENTER);
         fill(255);
-        text("Paused", width / 2, height / 2 - 100 * textSizeFactor);
-        textSize(16 * textSizeFactor);
-        text("Tap to move all men, or drag to select and move.", width / 2, height / 2 - 50 * textSizeFactor);
-        text("Right-click or two-finger tap to move nearby men.", width / 2, height / 2 - 30 * textSizeFactor);
-        text("Tap and hold to resume.", width / 2, height / 2 - 10 * textSizeFactor);
+        text("Paused", width / 2, height / 2 - 80 * textSizeFactor);
+        textSize(14 * textSizeFactor);
+        text("Tap to move all men.", width / 2, height / 2 - 40 * textSizeFactor);
+        text("Drag to select and move.", width / 2, height / 2 - 20 * textSizeFactor);
+        text("Press P to resume.", width / 2, height / 2);
     } catch (e) {
         console.error("drawPauseMenu error:", e);
     }
@@ -462,9 +397,6 @@ function moveNearbyMen(x, y) {
     try {
         if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
             throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
-        }
-        if (!window.createVector || !window.dist) {
-            throw new Error("p5.js functions createVector or dist unavailable.");
         }
         let clickPos = createVector(x, y);
         men.forEach(man => {
@@ -477,12 +409,7 @@ function moveNearbyMen(x, y) {
             }
         });
     } catch (e) {
-        console.error("moveNearbyMen error:", {
-            message: e.message,
-            x: x,
-            y: y,
-            stack: e.stack
-        });
+        console.error("moveNearbyMen error:", e);
     }
 }
 
@@ -490,9 +417,6 @@ function handleInputStart(x, y, isRightClick = false) {
     try {
         if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
             throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
-        }
-        if (!window.createVector) {
-            throw new Error("p5.js createVector unavailable.");
         }
         if (isPaused) return;
         if (gameState === 'tutorial') {
@@ -502,21 +426,20 @@ function handleInputStart(x, y, isRightClick = false) {
             if (isRightClick) {
                 moveNearbyMen(x, y);
             } else {
+                // NEW: Clear previous selection only if not already selecting
+                if (!isSelecting) {
+                    men.forEach(man => man.selected = false);
+                }
                 startPos = createVector(x, y);
                 currentPos = startPos.copy();
                 isSelecting = true;
+                console.log("Input start:", x, y); // Debug
             }
         } else {
             handleInputClick(x, y);
         }
     } catch (e) {
-        console.error("handleInputStart error:", {
-            message: e.message,
-            x: x,
-            y: y,
-            isRightClick: isRightClick,
-            stack: e.stack
-        });
+        console.error("handleInputStart error:", e);
     }
 }
 
@@ -525,35 +448,19 @@ function handleInputDrag(x, y) {
         if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
             throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
         }
-        if (!window.createVector || !window.dist) {
-            throw new Error("p5.js functions createVector or dist unavailable.");
-        }
-        if (isPaused || gameState !== 'playing') return;
+        if (isPaused || gameState !== 'playing' || !startPos) return;
         currentPos = createVector(x, y);
         isSelecting = true;
         men.forEach(man => {
-            if (useRectangularSelection) {
-                let minX = min(startPos.x, currentPos.x);
-                let maxX = max(startPos.x, currentPos.x);
-                let minY = min(startPos.y, currentPos.y);
-                let maxY = max(startPos.y, currentPos.y);
-                if (man.x > minX && man.x < maxX && man.y > minY && man.y < maxY) {
-                    man.selected = true;
-                }
-            } else {
-                let touchRadius = BRUSH_RADIUS * (/Mobi|Android/i.test(navigator.userAgent) ? 1.5 : 1);
-                if (dist(currentPos.x, currentPos.y, man.x, man.y) < touchRadius) {
-                    man.selected = true;
-                }
+            // NEW: Use a larger touch radius for mobile and check health
+            let touchRadius = BRUSH_RADIUS * (/Mobi|Android/i.test(navigator.userAgent) ? 2 : 1.5);
+            if (man.health > 0 && dist(currentPos.x, currentPos.y, man.x, man.y) < touchRadius) {
+                man.selected = true;
             }
         });
+        console.log("Dragging:", x, y); // Debug
     } catch (e) {
-        console.error("handleInputDrag error:", {
-            message: e.message,
-            x: x,
-            y: y,
-            stack: e.stack
-        });
+        console.error("handleInputDrag error:", e);
     }
 }
 
@@ -562,14 +469,11 @@ function handleInputEnd(x, y) {
         if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
             throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
         }
-        if (!window.createVector || !window.dist) {
-            throw new Error("p5.js functions createVector or dist unavailable.");
-        }
-        if (isPaused || gameState !== 'playing') return;
-        let clickPos = createVector(x, y);
-        let selectedMen = men.filter(m => m.selected);
-        if (startPos && currentPos && p5.Vector.dist(startPos, currentPos) < 5) {
-            // Handle click/tap (not a drag)
+        if (isPaused || gameState !== 'playing' || !startPos || !currentPos) return;
+        // NEW: Check if the drag distance is small to treat as a tap
+        if (p5.Vector.dist(startPos, currentPos) < 10) {
+            let selectedMen = men.filter(m => m.selected && m.health > 0);
+            let clickPos = createVector(x, y);
             if (selectedMen.length > 0) {
                 selectedMen.forEach(man => {
                     man.targetPos = clickPos.copy();
@@ -580,6 +484,21 @@ function handleInputEnd(x, y) {
                 });
             } else {
                 men.forEach(man => {
+                    if (man.health > 0) {
+                        man.targetPos = clickPos.copy();
+                        man.targetGorilla = null;
+                        man.attackMoveTarget = null;
+                        man.holdPosition = false;
+                        man.selected = false;
+                    }
+                });
+            }
+        } else {
+            // NEW: Move selected men to the end position
+            let selectedMen = men.filter(m => m.selected && m.health > 0);
+            if (selectedMen.length > 0) {
+                let clickPos = createVector(x, y);
+                selectedMen.forEach(man => {
                     man.targetPos = clickPos.copy();
                     man.targetGorilla = null;
                     man.attackMoveTarget = null;
@@ -587,26 +506,13 @@ function handleInputEnd(x, y) {
                     man.selected = false;
                 });
             }
-        } else if (selectedMen.length > 0) {
-            // Handle drag release for selected units
-            selectedMen.forEach(man => {
-                man.targetPos = clickPos.copy();
-                man.targetGorilla = null;
-                man.attackMoveTarget = null;
-                man.holdPosition = false;
-                man.selected = false;
-            });
         }
         isSelecting = false;
         startPos = null;
         currentPos = null;
+        console.log("Input end:", x, y); // Debug
     } catch (e) {
-        console.error("handleInputEnd error:", {
-            message: e.message,
-            x: x,
-            y: y,
-            stack: e.stack
-        });
+        console.error("handleInputEnd error:", e);
     }
 }
 
@@ -616,54 +522,33 @@ function mousePressed() {
             console.warn("mousePressed: mouseX or mouseY undefined");
             return;
         }
-        if (!window.RIGHT || !window.LEFT) {
-            throw new Error("p5.js mouseButton constants (RIGHT, LEFT) unavailable.");
-        }
-        console.log(`mousePressed: button=${mouseButton}, x=${mouseX}, y=${mouseY}`);
         if (mouseButton === RIGHT) {
             handleInputStart(mouseX, mouseY, true);
         } else if (mouseButton === LEFT) {
             handleInputStart(mouseX, mouseY, false);
         }
     } catch (e) {
-        console.error("mousePressed error:", {
-            message: e.message,
-            mouseButton: typeof mouseButton,
-            mouseX: mouseX,
-            mouseY: mouseY,
-            stack: e.stack
-        });
+        console.error("mousePressed error:", e);
     }
 }
 
 function touchStarted() {
     try {
         if (!touches || !Array.isArray(touches)) {
-            console.warn("touchStarted: touches is undefined or not an array");
+            console.warn("touchStarted: touches invalid");
             return false;
         }
-        console.log(`touchStarted: touches.length=${touches.length}`);
         if (touches.length === 2) {
-            if (!touches[0] || !touches[1] || typeof touches[0].x !== 'number' || typeof touches[1].x !== 'number') {
-                throw new Error("Invalid touch coordinates");
-            }
             let x = (touches[0].x + touches[1].x) / 2;
             let y = (touches[0].y + touches[1].y) / 2;
             moveNearbyMen(x, y);
             return false;
         } else if (touches.length === 1) {
-            if (!touches[0] || typeof touches[0].x !== 'number') {
-                throw new Error("Invalid single touch coordinates");
-            }
             handleInputStart(touches[0].x, touches[0].y, false);
             return false;
         }
     } catch (e) {
-        console.error("touchStarted error:", {
-            message: e.message,
-            touches: touches ? touches.length : 'undefined',
-            stack: e.stack
-        });
+        console.error("touchStarted error:", e);
         return false;
     }
 }
@@ -678,12 +563,7 @@ function mouseDragged() {
             handleInputDrag(mouseX, mouseY);
         }
     } catch (e) {
-        console.error("mouseDragged error:", {
-            message: e.message,
-            mouseX: mouseX,
-            mouseY: mouseY,
-            stack: e.stack
-        });
+        console.error("mouseDragged error:", e);
     }
 }
 
@@ -693,17 +573,10 @@ function touchMoved() {
             console.warn("touchMoved: Invalid touches array");
             return false;
         }
-        if (!touches[0] || typeof touches[0].x !== 'number') {
-            throw new Error("Invalid touch coordinates");
-        }
         handleInputDrag(touches[0].x, touches[0].y);
         return false;
     } catch (e) {
-        console.error("touchMoved error:", {
-            message: e.message,
-            touches: touches ? touches.length : 'undefined',
-            stack: e.stack
-        });
+        console.error("touchMoved error:", e);
         return false;
     }
 }
@@ -718,21 +591,12 @@ function mouseReleased() {
             handleInputEnd(mouseX, mouseY);
         }
     } catch (e) {
-        console.error("mouseReleased error:", {
-            message: e.message,
-            mouseX: mouseX,
-            mouseY: mouseY,
-            stack: e.stack
-        });
+        console.error("mouseReleased error:", e);
     }
 }
 
 function touchEnded() {
     try {
-        if (!touches || !Array.isArray(touches)) {
-            console.warn("touchEnded: touches is undefined or not an array");
-            return;
-        }
         let x = touches.length === 1 && touches[0] ? touches[0].x : mouseX;
         let y = touches.length === 1 && touches[0] ? touches[0].y : mouseY;
         if (typeof x === 'undefined' || typeof y === 'undefined') {
@@ -741,13 +605,7 @@ function touchEnded() {
         }
         handleInputEnd(x, y);
     } catch (e) {
-        console.error("touchEnded error:", {
-            message: e.message,
-            touches: touches ? touches.length : 'undefined',
-            x: x,
-            y: y,
-            stack: e.stack
-        });
+        console.error("touchEnded error:", e);
     }
 }
 
@@ -756,12 +614,9 @@ function handleInputClick(x, y) {
         if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
             throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
         }
-        if (!window.createVector) {
-            throw new Error("p5.js createVector unavailable.");
-        }
         if (gameState === 'playing') {
             let clickPos = createVector(x, y);
-            let selectedMen = men.filter(m => m.selected);
+            let selectedMen = men.filter(m => m.selected && m.health > 0);
             if (selectedMen.length > 0) {
                 selectedMen.forEach(man => {
                     man.targetPos = clickPos.copy();
@@ -772,35 +627,32 @@ function handleInputClick(x, y) {
                 });
             } else {
                 men.forEach(man => {
-                    man.targetPos = clickPos.copy();
-                    man.targetGorilla = null;
-                    man.attackMoveTarget = null;
-                    man.holdPosition = false;
-                    man.selected = false;
+                    if (man.health > 0) {
+                        man.targetPos = clickPos.copy();
+                        man.targetGorilla = null;
+                        man.attackMoveTarget = null;
+                        man.holdPosition = false;
+                        man.selected = false;
+                    }
                 });
             }
         } else if (gameState === 'transition' && transitionTimer <= 0) {
-            if (x > width / 2 - 100 * textSizeFactor && x < width / 2 + 100 * textSizeFactor &&
-                y > height / 2 && y < height / 2 + 50 * textSizeFactor) {
+            if (x > width / 2 - 80 * textSizeFactor && x < width / 2 + 80 * textSizeFactor &&
+                y > height / 2 && y < height / 2 + 40 * textSizeFactor) {
                 currentLevel++;
                 gameState = 'loading';
                 loadingTimer = 60;
             }
         } else if (gameState === 'gameOver' && transitionTimer <= 0) {
-            if (x > width / 2 - 100 * textSizeFactor && x < width / 2 + 100 * textSizeFactor &&
-                y > height / 2 && y < height / 2 + 50 * textSizeFactor) {
+            if (x > width / 2 - 80 * textSizeFactor && x < width / 2 + 80 * textSizeFactor &&
+                y > height / 2 && y < height / 2 + 40 * textSizeFactor) {
                 gameState = 'loading';
                 loadingTimer = 60;
                 startLevel(currentLevel);
             }
         }
     } catch (e) {
-        console.error("handleInputClick error:", {
-            message: e.message,
-            x: x,
-            y: y,
-            stack: e.stack
-        });
+        console.error("handleInputClick error:", e);
     }
 }
 
@@ -823,7 +675,7 @@ function drawObstacles() {
                 fill(139, 69, 19);
                 rect(obs.x - OBSTACLE_SIZE / 2, obs.y - OBSTACLE_SIZE / 2, OBSTACLE_SIZE, OBSTACLE_SIZE);
                 fill(50, 205, 50);
-                ellipse(obs.x, obs.y - OBSTACLE_SIZE / 2, OBSTACLE_SIZE * 3, OBSTACLE_SIZE * 3);
+                ellipse(obs.x, obs.y - OBSTACLE_SIZE / 2, OBSTACLE_SIZE * 2.5, OBSTACLE_SIZE * 2.5);
             } else {
                 fill(100);
                 ellipse(obs.x, obs.y, OBSTACLE_SIZE * 2, OBSTACLE_SIZE * 2);
@@ -850,9 +702,6 @@ function closestPointOnCircle(cx, cy, r, px, py) {
 
 function shuffle(array) {
     try {
-        if (!Array.isArray(array)) {
-            throw new Error("shuffle: Input is not an array");
-        }
         let copy = [...array];
         for (let i = copy.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
@@ -1015,25 +864,25 @@ class Man {
                 ellipse(this.x, this.y, this.size * 2);
             }
             stroke(this.selected ? 0 : 139, 69, 19);
-            strokeWeight(3);
+            strokeWeight(2);
             if (this.attackFlash > 0) {
                 fill(255, 255, 0);
                 this.attackFlash--;
             } else {
                 fill(this.selected ? 0 : 139, 69, 19);
             }
-            line(this.x, this.y, this.x, this.y + 10);
-            line(this.x - 5, this.y + 5, this.x + 5, this.y + 5);
-            line(this.x, this.y + 10, this.x - 5, this.y + 15);
-            line(this.x, this.y + 10, this.x + 5, this.y + 15);
+            line(this.x, this.y, this.x, this.y + 8);
+            line(this.x - 4, this.y + 4, this.x + 4, this.y + 4);
+            line(this.x, this.y + 8, this.x - 4, this.y + 12);
+            line(this.x, this.y + 8, this.x + 4, this.y + 12);
             noStroke();
-            ellipse(this.x, this.y - 5, 5);
+            ellipse(this.x, this.y - 4, 4);
 
             if (this.selected) {
-                let barWidth = 20;
-                let barHeight = 3;
+                let barWidth = 16;
+                let barHeight = 2;
                 let barX = this.x - barWidth / 2;
-                let barY = this.y - this.size - 5;
+                let barY = this.y - this.size - 4;
                 fill(255);
                 rect(barX, barY, barWidth, barHeight);
                 fill(0, 255, 0);
@@ -1042,15 +891,15 @@ class Man {
 
             if (this.targetPos) {
                 stroke(255, 0, 0);
-                line(this.targetPos.x - 5, this.targetPos.y - 5, this.targetPos.x + 5, this.targetPos.y + 5);
-                line(this.targetPos.x + 5, this.targetPos.y - 5, this.targetPos.x - 5, this.targetPos.y + 5);
+                line(this.targetPos.x - 4, this.targetPos.y - 4, this.targetPos.x + 4, this.targetPos.y + 4);
+                line(this.targetPos.x + 4, this.targetPos.y - 4, this.targetPos.x - 4, this.targetPos.y + 4);
                 noStroke();
             }
 
             for (let i = this.damageTexts.length - 1; i >= 0; i--) {
                 let dt = this.damageTexts[i];
                 fill(255, 0, 0, map(dt.timer, 0, DAMAGE_TEXT_DURATION, 0, 255));
-                textSize(12 * textSizeFactor);
+                textSize(10 * textSizeFactor);
                 text(dt.amount, this.x, this.y - dt.timer * 0.5);
                 dt.timer--;
                 if (dt.timer <= 0) this.damageTexts.splice(i, 1);
@@ -1123,21 +972,43 @@ class Man {
             desired.setMag(MAN_SPEED / 60);
             let velocity = desired.copy();
 
+            // NEW: Enhanced obstacle avoidance
             let avoidance = createVector(0, 0);
             let count = 0;
             for (let obs of obstacles) {
                 let d = dist(this.x, this.y, obs.x, obs.y);
-                if (d < LOOKAHEAD_DISTANCE && d > 0) {
+                // NEW: Check closer distance and increase avoidance range
+                if (d < LOOKAHEAD_DISTANCE + obs.r && d > 0) {
                     let diff = createVector(this.x - obs.x, this.y - obs.y);
-                    let strength = (LOOKAHEAD_DISTANCE - d) / LOOKAHEAD_DISTANCE;
-                    diff.setMag(MAN_SPEED / 60 * strength);
+                    // NEW: Stronger avoidance force
+                    let strength = (LOOKAHEAD_DISTANCE + obs.r - d) / (LOOKAHEAD_DISTANCE + obs.r);
+                    diff.setMag(MAN_SPEED / 60 * strength * 2); // Increased strength
                     avoidance.add(diff);
                     count++;
                 }
             }
             if (count > 0) {
                 avoidance.div(count);
-                velocity.lerp(avoidance, 0.3);
+                // NEW: Higher lerp weight for avoidance
+                velocity.lerp(avoidance, 0.5);
+            }
+
+            // NEW: Check for collisions and adjust position
+            let newX = this.x + velocity.x;
+            let newY = this.y + velocity.y;
+            for (let obs of obstacles) {
+                let d = dist(newX, newY, obs.x, obs.y);
+                if (d < this.size / 2 + obs.r) {
+                    let closest = closestPointOnCircle(obs.x, obs.y, obs.r, newX, newY);
+                    let normal = createVector(newX - closest.x, newY - closest.y);
+                    if (normal.mag() > 0) {
+                        normal.normalize();
+                        let dot = velocity.dot(normal);
+                        if (dot > 0) {
+                            velocity.sub(p5.Vector.mult(normal, dot));
+                        }
+                    }
+                }
             }
 
             let separation = createVector(0, 0);
@@ -1271,16 +1142,16 @@ class Gorilla {
             }
             ellipse(0, 0, this.size);
             fill(0);
-            ellipse(0, -10, this.size / 2);
+            ellipse(0, -8, this.size / 2);
             fill(255);
-            ellipse(-10, -15, 5);
-            ellipse(10, -15, 5);
+            ellipse(-8, -12, 4);
+            ellipse(8, -12, 4);
             pop();
 
-            let barWidth = 40;
-            let barHeight = 5;
+            let barWidth = 32;
+            let barHeight = 4;
             let barX = this.x - barWidth / 2;
-            let barY = this.y - this.size / 2 - 10;
+            let barY = this.y - this.size / 2 - 8;
             fill(255);
             rect(barX, barY, barWidth, barHeight);
             fill(255, 0, 0);
@@ -1289,7 +1160,7 @@ class Gorilla {
             for (let i = this.damageTexts.length - 1; i >= 0; i--) {
                 let dt = this.damageTexts[i];
                 fill(255, 0, 0, map(dt.timer, 0, DAMAGE_TEXT_DURATION, 0, 255));
-                textSize(12 * textSizeFactor);
+                textSize(10 * textSizeFactor);
                 text(dt.amount, this.x, this.y - dt.timer * 0.5);
                 dt.timer--;
                 if (dt.timer <= 0) this.damageTexts.splice(i, 1);
@@ -1324,10 +1195,10 @@ class Gorilla {
                     // Stay and fight
                 } else {
                     let nearbyMen = quadTree.query({
-                        x: this.x - 100,
-                        y: this.y - 100,
-                        width: 200,
-                        height: 200
+                        x: this.x - 80,
+                        y: this.y - 80,
+                        width: 160,
+                        height: 160
                     }).filter(item => item.data instanceof Man && item.data.health > 0);
                     let fleeThreshold = max(5, 10 - currentLevel);
                     if (nearbyMen.length > fleeThreshold) {
