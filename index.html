@@ -142,13 +142,25 @@ function setup() {
 
 function lockOrientation() {
     try {
-        if (document.documentElement.requestFullscreen) {
-            document.documentElement.requestFullscreen().then(() => {
-                if (screen.orientation && screen.orientation.lock) {
-                    screen.orientation.lock('landscape').catch(err => console.log("Orientation lock failed:", err));
-                }
-            }).catch(err => console.log("Fullscreen request failed:", err));
-        }
+        const goFullscreen = () => {
+            const elem = document.documentElement;
+            if (elem.requestFullscreen) {
+                return elem.requestFullscreen();
+            } else if (elem.webkitRequestFullscreen) { // Safari
+                return elem.webkitRequestFullscreen();
+            } else if (elem.msRequestFullscreen) { // IE11
+                return elem.msRequestFullscreen();
+            }
+            return Promise.resolve();
+        };
+
+        goFullscreen().then(() => {
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock('landscape').catch(err => console.log("Orientation lock failed:", err));
+            }
+            // Ensure canvas resizes after fullscreen
+            windowResized();
+        }).catch(err => console.log("Fullscreen request failed:", err));
     } catch (e) {
         console.error("lockOrientation error:", e);
     }
@@ -490,9 +502,6 @@ function handleInputStart(x, y, isRightClick = false) {
             if (isRightClick) {
                 moveNearbyMen(x, y);
             } else {
-                if (!isSelecting) {
-                    men.forEach(man => man.selected = false);
-                }
                 startPos = createVector(x, y);
                 currentPos = startPos.copy();
                 isSelecting = true;
@@ -557,9 +566,10 @@ function handleInputEnd(x, y) {
             throw new Error("p5.js functions createVector or dist unavailable.");
         }
         if (isPaused || gameState !== 'playing') return;
+        let clickPos = createVector(x, y);
+        let selectedMen = men.filter(m => m.selected);
         if (startPos && currentPos && p5.Vector.dist(startPos, currentPos) < 5) {
-            let selectedMen = men.filter(m => m.selected);
-            let clickPos = createVector(x, y);
+            // Handle click/tap (not a drag)
             if (selectedMen.length > 0) {
                 selectedMen.forEach(man => {
                     man.targetPos = clickPos.copy();
@@ -577,6 +587,15 @@ function handleInputEnd(x, y) {
                     man.selected = false;
                 });
             }
+        } else if (selectedMen.length > 0) {
+            // Handle drag release for selected units
+            selectedMen.forEach(man => {
+                man.targetPos = clickPos.copy();
+                man.targetGorilla = null;
+                man.attackMoveTarget = null;
+                man.holdPosition = false;
+                man.selected = false;
+            });
         }
         isSelecting = false;
         startPos = null;
