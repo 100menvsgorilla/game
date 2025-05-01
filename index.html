@@ -1,0 +1,1432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>100 Men vs Gorillas</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.2/p5.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 100vh;
+            background-color: #2c3e50;
+            overflow: hidden;
+        }
+        #stats-bar {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            text-align: center;
+            padding: 10px 0;
+            font-family: Arial, sans-serif;
+            font-size: clamp(12px, 2.5vw, 16px);
+            font-weight: bold;
+            z-index: 1000;
+        }
+        canvas {
+            border: 2px solid #ffffff;
+            margin-top: 40px;
+            max-width: 100%;
+            max-height: calc(100vh - 40px);
+        }
+        @media (orientation: portrait) {
+            body::before {
+                content: "Please rotate your device to landscape mode for the best experience.";
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                text-align: center;
+                z-index: 1001;
+                font-size: 18px;
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div id="stats-bar">Gorillas: 0 | Men: 0 | Level: 1 | Tap to move, drag to select</div>
+<script>
+// Log script start for debugging
+console.log("Game script started");
+
+// Global error handler
+window.onerror = function (msg, url, lineNo, columnNo, error) {
+    console.error("Script error details:", {
+        message: msg,
+        url: url,
+        line: lineNo,
+        columnNo: columnNo,
+        stack: error ? error.stack : 'No stack trace',
+        context: 'Global error handler'
+    });
+    return false;
+};
+
+// Check if running on file://
+if (window.location.protocol === 'file:') {
+    console.warn("Running via file:// may cause issues. Use a local server (e.g., python -m http.server 8000 or npx serve).");
+}
+
+let men = [];
+let gorillas = [];
+let obstacles = [];
+let isSelecting = false;
+let startPos = null;
+let currentPos = null;
+let gameState = 'tutorial';
+let currentLevel = 1;
+let transitionTimer = 0;
+let loadingTimer = 0;
+let quadTree = null;
+let isPaused = false;
+let quadTreeNeedsUpdate = false;
+let textSizeFactor = 1;
+let useRectangularSelection = /Mobi|Android/i.test(navigator.userAgent) ? false : false;
+const BRUSH_RADIUS = /Mobi|Android/i.test(navigator.userAgent) ? 100 : 75;
+const NEARBY_RADIUS = 100;
+const STATS_BAR_HEIGHT = 40;
+
+const LEVELS = [
+    { men: 100, gorillas: [{ type: 'standard', count: 1 }] },
+    { men: 80, gorillas: [{ type: 'standard', count: 2 }] },
+    { men: 60, gorillas: [{ type: 'standard', count: 2 }, { type: 'tank', count: 1 }] },
+    { men: 40, gorillas: [{ type: 'standard', count: 3 }, { type: 'tank', count: 1 }] },
+    { men: 20, gorillas: [{ type: 'standard', count: 3 }, { type: 'tank', count: 2 }] }
+];
+
+const MAN_SIZE = 8;
+const GORILLA_SIZE = 50;
+const OBSTACLE_SIZE = 20;
+const MAN_SPEED = 100;
+const GORILLA_SPEED = { standard: 80, tank: 60 };
+const GORILLA_TURN_SPEED = 0.02;
+const MAN_ATTACK_RANGE = 15;
+const MAN_ATTACK_COOLDOWN = 60;
+const MAN_DAMAGE = 8;
+const MAN_HEALTH = 10;
+const GORILLA_ATTACK_RANGE = GORILLA_SIZE / 2 + MAN_SIZE / 2;
+const GORILLA_ATTACK_COOLDOWN = 30;
+const GORILLA_DAMAGE = 10;
+const GORILLA_HEALTH = { standard: 500, tank: 750 };
+const LOOKAHEAD_DISTANCE = 75;
+const DAMAGE_TEXT_DURATION = 30;
+const TRANSITION_DELAY = 120;
+
+function setup() {
+    try {
+        if (typeof p5 === 'undefined' || !window.createCanvas || !window.createVector) {
+            throw new Error("p5.js is not loaded or missing required functions. Check CDN or use a local copy.");
+        }
+        let canvas = createCanvas(windowWidth, windowHeight - STATS_BAR_HEIGHT);
+        canvas.elt.addEventListener('contextmenu', (e) => e.preventDefault());
+        quadTree = new QuadTree({ x: 0, y: 0, width: width, height: height }, 4);
+        textSizeFactor = min(width, height) / 600;
+        canvas.elt.addEventListener('touchstart', lockOrientation, { once: true });
+    } catch (e) {
+        console.error("Setup error:", e);
+        noLoop();
+    }
+}
+
+function lockOrientation() {
+    try {
+        if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().then(() => {
+                if (screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(err => console.log("Orientation lock failed:", err));
+                }
+            }).catch(err => console.log("Fullscreen request failed:", err));
+        }
+    } catch (e) {
+        console.error("lockOrientation error:", e);
+    }
+}
+
+function windowResized() {
+    try {
+        resizeCanvas(windowWidth, windowHeight - STATS_BAR_HEIGHT);
+        quadTree = new QuadTree({ x: 0, y: 0, width: width, height: height }, 4);
+        textSizeFactor = min(width, height) / 600;
+        quadTreeNeedsUpdate = true;
+    } catch (e) {
+        console.error("windowResized error:", e);
+    }
+}
+
+function startLevel(level) {
+    try {
+        if (!Number.isInteger(level) || level < 1 || level > LEVELS.length) {
+            throw new Error(`Invalid level: ${level}. Must be between 1 and ${LEVELS.length}.`);
+        }
+        if (width <= 0 || height <= 0) {
+            throw new Error("Canvas dimensions are invalid. Width: " + width + ", Height: " + height);
+        }
+
+        men = [];
+        gorillas = [];
+        obstacles = [];
+
+        for (let i = 0; i < 5; i++) {
+            let pos;
+            let attempts = 0;
+            const maxAttempts = 1000;
+            do {
+                pos = createVector(random(OBSTACLE_SIZE, width - OBSTACLE_SIZE), random(OBSTACLE_SIZE, height - OBSTACLE_SIZE));
+                attempts++;
+            } while (obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < OBSTACLE_SIZE * 2) && attempts < maxAttempts);
+            if (attempts >= maxAttempts) {
+                console.warn(`Obstacle (tree) placement failed after ${maxAttempts} attempts. Using fallback position.`);
+                pos = createVector(OBSTACLE_SIZE + i * OBSTACLE_SIZE * 2, OBSTACLE_SIZE);
+            }
+            obstacles.push({ x: pos.x, y: pos.y, type: 'tree', r: OBSTACLE_SIZE });
+        }
+
+        for (let i = 0; i < 5; i++) {
+            let pos;
+            let attempts = 0;
+            const maxAttempts = 1000;
+            do {
+                pos = createVector(random(OBSTACLE_SIZE, width - OBSTACLE_SIZE), random(OBSTACLE_SIZE, height - OBSTACLE_SIZE));
+                attempts++;
+            } while (obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < OBSTACLE_SIZE * 2) && attempts < maxAttempts);
+            if (attempts >= maxAttempts) {
+                console.warn(`Obstacle (rock) placement failed after ${maxAttempts} attempts. Using fallback position.`);
+                pos = createVector(OBSTACLE_SIZE + (i + 5) * OBSTACLE_SIZE * 2, OBSTACLE_SIZE);
+            }
+            obstacles.push({ x: pos.x, y: pos.y, type: 'rock', r: OBSTACLE_SIZE });
+        }
+
+        let numMen = LEVELS[level - 1].men;
+        let spawnGrid = [];
+        for (let i = 0; i < numMen; i++) {
+            let pos;
+            let attempts = 0;
+            const maxAttempts = 1000;
+            do {
+                pos = createVector(random(MAN_SIZE / 2, width - MAN_SIZE / 2), random(MAN_SIZE / 2, height - MAN_SIZE / 2));
+                attempts++;
+            } while (
+                (men.some(m => p5.Vector.dist(pos, createVector(m.x, m.y)) < MAN_SIZE) ||
+                 gorillas.some(g => p5.Vector.dist(pos, createVector(g.x, g.y)) < MAN_SIZE + GORILLA_SIZE / 2) ||
+                 obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < MAN_SIZE / 2 + o.r)) &&
+                attempts < maxAttempts
+            );
+            if (attempts < maxAttempts) {
+                men.push(new Man(pos.x, pos.y));
+            } else {
+                if (spawnGrid.length === 0) {
+                    let gridSize = ceil(sqrt(numMen));
+                    let spacing = min(width, height) / gridSize;
+                    for (let x = 0; x < gridSize; x++) {
+                        for (let y = 0; y < gridSize; y++) {
+                            spawnGrid.push(createVector((x + 0.5) * spacing, (y + 0.5) * spacing));
+                        }
+                    }
+                    spawnGrid = shuffle(spawnGrid);
+                }
+                pos = spawnGrid[i % spawnGrid.length] || createVector(MAN_SIZE / 2 + i * MAN_SIZE, MAN_SIZE / 2);
+                men.push(new Man(pos.x, pos.y));
+            }
+        }
+
+        let gorillaConfigs = LEVELS[level - 1].gorillas;
+        let spawnGridGorillas = [];
+        let gorillaIndex = 0;
+        for (let config of gorillaConfigs) {
+            if (!config.type || !GORILLA_HEALTH[config.type]) {
+                throw new Error(`Invalid gorilla type: ${config.type}`);
+            }
+            for (let i = 0; i < config.count; i++) {
+                let pos;
+                let attempts = 0;
+                const maxAttempts = 1000;
+                do {
+                    pos = createVector(random(GORILLA_SIZE / 2, width - GORILLA_SIZE / 2), random(GORILLA_SIZE / 2, height - GORILLA_SIZE / 2));
+                    attempts++;
+                } while (
+                    (men.some(m => p5.Vector.dist(pos, createVector(m.x, m.y)) < MAN_SIZE + GORILLA_SIZE / 2) ||
+                     gorillas.some(g => p5.Vector.dist(pos, createVector(g.x, g.y)) < GORILLA_SIZE) ||
+                     obstacles.some(o => p5.Vector.dist(pos, createVector(o.x, o.y)) < GORILLA_SIZE / 2 + o.r)) &&
+                    attempts < maxAttempts
+                );
+                if (attempts < maxAttempts) {
+                    gorillas.push(new Gorilla(pos.x, pos.y, config.type));
+                } else {
+                    if (spawnGridGorillas.length === 0) {
+                        let gridSize = ceil(sqrt(gorillaConfigs.reduce((sum, cfg) => sum + cfg.count, 0)));
+                        let spacing = min(width, height) / gridSize;
+                        for (let x = 0; x < gridSize; x++) {
+                            for (let y = 0; y < gridSize; y++) {
+                                spawnGridGorillas.push(createVector((x + 0.5) * spacing, (y + 0.5) * spacing));
+                            }
+                        }
+                        spawnGridGorillas = shuffle(spawnGridGorillas);
+                    }
+                    pos = spawnGridGorillas[gorillaIndex % spawnGridGorillas.length] || createVector(GORILLA_SIZE / 2 + gorillaIndex * GORILLA_SIZE, GORILLA_SIZE / 2);
+                    gorillas.push(new Gorilla(pos.x, pos.y, config.type));
+                }
+                gorillaIndex++;
+            }
+        }
+
+        let missingMen = LEVELS[level - 1].men - men.length;
+        gorillas.forEach(g => {
+            g.health *= (1 + 0.1 * missingMen);
+        });
+
+        gameState = 'playing';
+        transitionTimer = 0;
+        loadingTimer = 0;
+        quadTreeNeedsUpdate = true;
+        loop();
+    } catch (e) {
+        console.error("startLevel error:", {
+            level: level,
+            message: e.message,
+            stack: e.stack
+        });
+        noLoop();
+    }
+}
+
+function draw() {
+    try {
+        if (!window.background || !window.fill) {
+            throw new Error("p5.js drawing functions unavailable.");
+        }
+        if (isPaused) {
+            drawPauseMenu();
+            return;
+        }
+
+        document.getElementById('stats-bar').innerHTML = 
+            `Gorillas: ${gorillas.filter(g => g.health > 0).length} | ` +
+            `Men: ${men.filter(m => m.health > 0).length} | ` +
+            `Level: ${currentLevel} | Tap to move, drag to select`;
+
+        background(34, 139, 34);
+        drawObstacles();
+
+        if (quadTree && quadTreeNeedsUpdate) {
+            quadTree.clear();
+            men.forEach(m => {
+                if (m.health > 0) quadTree.insert({ x: m.x, y: m.y, data: m });
+            });
+            gorillas.forEach(g => {
+                if (g.health > 0) quadTree.insert({ x: g.x, y: g.y, data: g });
+            });
+            quadTreeNeedsUpdate = false;
+        }
+
+        if (gameState === 'tutorial') {
+            textSize(24 * textSizeFactor);
+            textAlign(CENTER);
+            fill(255);
+            text("100 Men vs Gorillas", width / 2, height / 2 - 100 * textSizeFactor);
+            textSize(16 * textSizeFactor);
+            text("Tap to move all men, or drag to select and move.", width / 2, height / 2 - 50 * textSizeFactor);
+            text("Right-click or two-finger tap to move nearby men.", width / 2, height / 2 - 30 * textSizeFactor);
+            text("Defeat all gorillas to win!", width / 2, height / 2 - 10 * textSizeFactor);
+            text("Tap to Start", width / 2, height / 2 + 50 * textSizeFactor);
+        } else if (gameState === 'playing') {
+            for (let gorilla of gorillas) {
+                gorilla.update();
+                gorilla.show();
+                gorilla.attack();
+            }
+
+            for (let man of men) {
+                man.move();
+                man.attack();
+                man.show();
+            }
+
+            if (gorillas.filter(g => g.health > 0).length === 0) {
+                if (currentLevel >= LEVELS.length) {
+                    gameState = 'victory';
+                } else {
+                    gameState = 'transition';
+                    transitionTimer = TRANSITION_DELAY;
+                }
+            } else if (men.filter(m => m.health > 0).length === 0) {
+                gameState = 'gameOver';
+                transitionTimer = TRANSITION_DELAY;
+            }
+
+            if (isSelecting && startPos && currentPos) {
+                stroke(0);
+                strokeWeight(2);
+                if (useRectangularSelection) {
+                    fill(0, 0, 255, 50);
+                    rect(startPos.x, startPos.y, currentPos.x - startPos.x, currentPos.y - startPos.y);
+                } else {
+                    fill(0, 0, 255, 100);
+                    ellipse(currentPos.x, currentPos.y, BRUSH_RADIUS * 2 + sin(frameCount * 0.1) * 10);
+                }
+                noStroke();
+                noFill();
+            }
+
+            drawUI();
+        } else if (gameState === 'transition') {
+            textSize(32 * textSizeFactor);
+            textAlign(CENTER);
+            fill(255);
+            text(`Level ${currentLevel} Complete!`, width / 2, height / 2 - 50 * textSizeFactor);
+            textSize(20 * textSizeFactor);
+            text("Preparing Next Level...", width / 2, height / 2 + 35 * textSizeFactor);
+            if (transitionTimer > 0) {
+                transitionTimer--;
+            } else {
+                currentLevel++;
+                gameState = 'loading';
+                loadingTimer = 60;
+            }
+        } else if (gameState === 'loading') {
+            textSize(32 * textSizeFactor);
+            textAlign(CENTER);
+            fill(255);
+            text("Loading...", width / 2, height / 2);
+            if (loadingTimer > 0) {
+                loadingTimer--;
+            } else {
+                startLevel(currentLevel);
+            }
+        } else if (gameState === 'gameOver') {
+            textSize(32 * textSizeFactor);
+            textAlign(CENTER);
+            fill(255);
+            text("Game Over!", width / 2, height / 2 - 50 * textSizeFactor);
+            fill(150);
+            rect(width / 2 - 100 * textSizeFactor, height / 2, 200 * textSizeFactor, 50 * textSizeFactor);
+            fill(0);
+            textSize(20 * textSizeFactor);
+            text("Retry", width / 2, height / 2 + 35 * textSizeFactor);
+            if (transitionTimer > 0) transitionTimer--;
+        } else if (gameState === 'victory') {
+            textSize(32 * textSizeFactor);
+            textAlign(CENTER);
+            fill(255);
+            text("Victory! All Levels Complete!", width / 2, height / 2);
+            noLoop();
+        }
+    } catch (e) {
+        console.error("Draw error:", e);
+        noLoop();
+    }
+}
+
+function drawUI() {}
+
+function drawPauseMenu() {
+    try {
+        background(34, 139, 34, 200);
+        textSize(32 * textSizeFactor);
+        textAlign(CENTER);
+        fill(255);
+        text("Paused", width / 2, height / 2 - 100 * textSizeFactor);
+        textSize(16 * textSizeFactor);
+        text("Tap to move all men, or drag to select and move.", width / 2, height / 2 - 50 * textSizeFactor);
+        text("Right-click or two-finger tap to move nearby men.", width / 2, height / 2 - 30 * textSizeFactor);
+        text("Tap and hold to resume.", width / 2, height / 2 - 10 * textSizeFactor);
+    } catch (e) {
+        console.error("drawPauseMenu error:", e);
+    }
+}
+
+function moveNearbyMen(x, y) {
+    try {
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
+        }
+        if (!window.createVector || !window.dist) {
+            throw new Error("p5.js functions createVector or dist unavailable.");
+        }
+        let clickPos = createVector(x, y);
+        men.forEach(man => {
+            if (man.health > 0 && dist(man.x, man.y, x, y) < NEARBY_RADIUS) {
+                man.targetPos = clickPos.copy();
+                man.targetGorilla = null;
+                man.attackMoveTarget = null;
+                man.holdPosition = false;
+                man.selected = false;
+            }
+        });
+    } catch (e) {
+        console.error("moveNearbyMen error:", {
+            message: e.message,
+            x: x,
+            y: y,
+            stack: e.stack
+        });
+    }
+}
+
+function handleInputStart(x, y, isRightClick = false) {
+    try {
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
+        }
+        if (!window.createVector) {
+            throw new Error("p5.js createVector unavailable.");
+        }
+        if (isPaused) return;
+        if (gameState === 'tutorial') {
+            gameState = 'loading';
+            loadingTimer = 60;
+        } else if (gameState === 'playing') {
+            if (isRightClick) {
+                moveNearbyMen(x, y);
+            } else {
+                if (!isSelecting) {
+                    men.forEach(man => man.selected = false);
+                }
+                startPos = createVector(x, y);
+                currentPos = startPos.copy();
+                isSelecting = true;
+            }
+        } else {
+            handleInputClick(x, y);
+        }
+    } catch (e) {
+        console.error("handleInputStart error:", {
+            message: e.message,
+            x: x,
+            y: y,
+            isRightClick: isRightClick,
+            stack: e.stack
+        });
+    }
+}
+
+function handleInputDrag(x, y) {
+    try {
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
+        }
+        if (!window.createVector || !window.dist) {
+            throw new Error("p5.js functions createVector or dist unavailable.");
+        }
+        if (isPaused || gameState !== 'playing') return;
+        currentPos = createVector(x, y);
+        isSelecting = true;
+        men.forEach(man => {
+            if (useRectangularSelection) {
+                let minX = min(startPos.x, currentPos.x);
+                let maxX = max(startPos.x, currentPos.x);
+                let minY = min(startPos.y, currentPos.y);
+                let maxY = max(startPos.y, currentPos.y);
+                if (man.x > minX && man.x < maxX && man.y > minY && man.y < maxY) {
+                    man.selected = true;
+                }
+            } else {
+                let touchRadius = BRUSH_RADIUS * (/Mobi|Android/i.test(navigator.userAgent) ? 1.5 : 1);
+                if (dist(currentPos.x, currentPos.y, man.x, man.y) < touchRadius) {
+                    man.selected = true;
+                }
+            }
+        });
+    } catch (e) {
+        console.error("handleInputDrag error:", {
+            message: e.message,
+            x: x,
+            y: y,
+            stack: e.stack
+        });
+    }
+}
+
+function handleInputEnd(x, y) {
+    try {
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
+        }
+        if (!window.createVector || !window.dist) {
+            throw new Error("p5.js functions createVector or dist unavailable.");
+        }
+        if (isPaused || gameState !== 'playing') return;
+        if (startPos && currentPos && p5.Vector.dist(startPos, currentPos) < 5) {
+            let selectedMen = men.filter(m => m.selected);
+            let clickPos = createVector(x, y);
+            if (selectedMen.length > 0) {
+                selectedMen.forEach(man => {
+                    man.targetPos = clickPos.copy();
+                    man.targetGorilla = null;
+                    man.attackMoveTarget = null;
+                    man.holdPosition = false;
+                    man.selected = false;
+                });
+            } else {
+                men.forEach(man => {
+                    man.targetPos = clickPos.copy();
+                    man.targetGorilla = null;
+                    man.attackMoveTarget = null;
+                    man.holdPosition = false;
+                    man.selected = false;
+                });
+            }
+        }
+        isSelecting = false;
+        startPos = null;
+        currentPos = null;
+    } catch (e) {
+        console.error("handleInputEnd error:", {
+            message: e.message,
+            x: x,
+            y: y,
+            stack: e.stack
+        });
+    }
+}
+
+function mousePressed() {
+    try {
+        if (typeof mouseX === 'undefined' || typeof mouseY === 'undefined') {
+            console.warn("mousePressed: mouseX or mouseY undefined");
+            return;
+        }
+        if (!window.RIGHT || !window.LEFT) {
+            throw new Error("p5.js mouseButton constants (RIGHT, LEFT) unavailable.");
+        }
+        console.log(`mousePressed: button=${mouseButton}, x=${mouseX}, y=${mouseY}`);
+        if (mouseButton === RIGHT) {
+            handleInputStart(mouseX, mouseY, true);
+        } else if (mouseButton === LEFT) {
+            handleInputStart(mouseX, mouseY, false);
+        }
+    } catch (e) {
+        console.error("mousePressed error:", {
+            message: e.message,
+            mouseButton: typeof mouseButton,
+            mouseX: mouseX,
+            mouseY: mouseY,
+            stack: e.stack
+        });
+    }
+}
+
+function touchStarted() {
+    try {
+        if (!touches || !Array.isArray(touches)) {
+            console.warn("touchStarted: touches is undefined or not an array");
+            return false;
+        }
+        console.log(`touchStarted: touches.length=${touches.length}`);
+        if (touches.length === 2) {
+            if (!touches[0] || !touches[1] || typeof touches[0].x !== 'number' || typeof touches[1].x !== 'number') {
+                throw new Error("Invalid touch coordinates");
+            }
+            let x = (touches[0].x + touches[1].x) / 2;
+            let y = (touches[0].y + touches[1].y) / 2;
+            moveNearbyMen(x, y);
+            return false;
+        } else if (touches.length === 1) {
+            if (!touches[0] || typeof touches[0].x !== 'number') {
+                throw new Error("Invalid single touch coordinates");
+            }
+            handleInputStart(touches[0].x, touches[0].y, false);
+            return false;
+        }
+    } catch (e) {
+        console.error("touchStarted error:", {
+            message: e.message,
+            touches: touches ? touches.length : 'undefined',
+            stack: e.stack
+        });
+        return false;
+    }
+}
+
+function mouseDragged() {
+    try {
+        if (typeof mouseX === 'undefined' || typeof mouseY === 'undefined') {
+            console.warn("mouseDragged: mouseX or mouseY undefined");
+            return;
+        }
+        if (mouseButton === LEFT) {
+            handleInputDrag(mouseX, mouseY);
+        }
+    } catch (e) {
+        console.error("mouseDragged error:", {
+            message: e.message,
+            mouseX: mouseX,
+            mouseY: mouseY,
+            stack: e.stack
+        });
+    }
+}
+
+function touchMoved() {
+    try {
+        if (!touches || !Array.isArray(touches) || touches.length !== 1) {
+            console.warn("touchMoved: Invalid touches array");
+            return false;
+        }
+        if (!touches[0] || typeof touches[0].x !== 'number') {
+            throw new Error("Invalid touch coordinates");
+        }
+        handleInputDrag(touches[0].x, touches[0].y);
+        return false;
+    } catch (e) {
+        console.error("touchMoved error:", {
+            message: e.message,
+            touches: touches ? touches.length : 'undefined',
+            stack: e.stack
+        });
+        return false;
+    }
+}
+
+function mouseReleased() {
+    try {
+        if (typeof mouseX === 'undefined' || typeof mouseY === 'undefined') {
+            console.warn("mouseReleased: mouseX or mouseY undefined");
+            return;
+        }
+        if (mouseButton === LEFT) {
+            handleInputEnd(mouseX, mouseY);
+        }
+    } catch (e) {
+        console.error("mouseReleased error:", {
+            message: e.message,
+            mouseX: mouseX,
+            mouseY: mouseY,
+            stack: e.stack
+        });
+    }
+}
+
+function touchEnded() {
+    try {
+        if (!touches || !Array.isArray(touches)) {
+            console.warn("touchEnded: touches is undefined or not an array");
+            return;
+        }
+        let x = touches.length === 1 && touches[0] ? touches[0].x : mouseX;
+        let y = touches.length === 1 && touches[0] ? touches[0].y : mouseY;
+        if (typeof x === 'undefined' || typeof y === 'undefined') {
+            console.warn("touchEnded: x or y undefined");
+            return;
+        }
+        handleInputEnd(x, y);
+    } catch (e) {
+        console.error("touchEnded error:", {
+            message: e.message,
+            touches: touches ? touches.length : 'undefined',
+            x: x,
+            y: y,
+            stack: e.stack
+        });
+    }
+}
+
+function handleInputClick(x, y) {
+    try {
+        if (typeof x !== 'number' || typeof y !== 'number' || isNaN(x) || isNaN(y)) {
+            throw new Error(`Invalid coordinates: x=${x}, y=${y}`);
+        }
+        if (!window.createVector) {
+            throw new Error("p5.js createVector unavailable.");
+        }
+        if (gameState === 'playing') {
+            let clickPos = createVector(x, y);
+            let selectedMen = men.filter(m => m.selected);
+            if (selectedMen.length > 0) {
+                selectedMen.forEach(man => {
+                    man.targetPos = clickPos.copy();
+                    man.targetGorilla = null;
+                    man.attackMoveTarget = null;
+                    man.holdPosition = false;
+                    man.selected = false;
+                });
+            } else {
+                men.forEach(man => {
+                    man.targetPos = clickPos.copy();
+                    man.targetGorilla = null;
+                    man.attackMoveTarget = null;
+                    man.holdPosition = false;
+                    man.selected = false;
+                });
+            }
+        } else if (gameState === 'transition' && transitionTimer <= 0) {
+            if (x > width / 2 - 100 * textSizeFactor && x < width / 2 + 100 * textSizeFactor &&
+                y > height / 2 && y < height / 2 + 50 * textSizeFactor) {
+                currentLevel++;
+                gameState = 'loading';
+                loadingTimer = 60;
+            }
+        } else if (gameState === 'gameOver' && transitionTimer <= 0) {
+            if (x > width / 2 - 100 * textSizeFactor && x < width / 2 + 100 * textSizeFactor &&
+                y > height / 2 && y < height / 2 + 50 * textSizeFactor) {
+                gameState = 'loading';
+                loadingTimer = 60;
+                startLevel(currentLevel);
+            }
+        }
+    } catch (e) {
+        console.error("handleInputClick error:", {
+            message: e.message,
+            x: x,
+            y: y,
+            stack: e.stack
+        });
+    }
+}
+
+function keyPressed() {
+    try {
+        if (key === 'P' || key === 'p') {
+            isPaused = !isPaused;
+            if (!isPaused) loop();
+            else noLoop();
+        }
+    } catch (e) {
+        console.error("keyPressed error:", e);
+    }
+}
+
+function drawObstacles() {
+    try {
+        for (let obs of obstacles) {
+            if (obs.type === 'tree') {
+                fill(139, 69, 19);
+                rect(obs.x - OBSTACLE_SIZE / 2, obs.y - OBSTACLE_SIZE / 2, OBSTACLE_SIZE, OBSTACLE_SIZE);
+                fill(50, 205, 50);
+                ellipse(obs.x, obs.y - OBSTACLE_SIZE / 2, OBSTACLE_SIZE * 3, OBSTACLE_SIZE * 3);
+            } else {
+                fill(100);
+                ellipse(obs.x, obs.y, OBSTACLE_SIZE * 2, OBSTACLE_SIZE * 2);
+            }
+        }
+    } catch (e) {
+        console.error("drawObstacles error:", e);
+    }
+}
+
+function closestPointOnCircle(cx, cy, r, px, py) {
+    try {
+        let dist = p5.Vector.dist(createVector(cx, cy), createVector(px, py));
+        if (dist <= r) {
+            return createVector(cx, cy);
+        }
+        let angle = atan2(py - cy, px - cx);
+        return createVector(cx + r * cos(angle), cy + r * sin(angle));
+    } catch (e) {
+        console.error("closestPointOnCircle error:", e);
+        return createVector(cx, cy);
+    }
+}
+
+function shuffle(array) {
+    try {
+        if (!Array.isArray(array)) {
+            throw new Error("shuffle: Input is not an array");
+        }
+        let copy = [...array];
+        for (let i = copy.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [copy[i], copy[j]] = [copy[j], copy[i]];
+        }
+        return copy;
+    } catch (e) {
+        console.error("shuffle error:", e);
+        return array || [];
+    }
+}
+
+class QuadTree {
+    constructor(boundary, capacity) {
+        this.boundary = boundary;
+        this.capacity = capacity;
+        this.points = [];
+        this.divided = false;
+        this.northeast = null;
+        this.northwest = null;
+        this.southeast = null;
+        this.southwest = null;
+    }
+
+    subdivide() {
+        try {
+            let x = this.boundary.x;
+            let y = this.boundary.y;
+            let w = this.boundary.width / 2;
+            let h = this.boundary.height / 2;
+            if (w < 10 || h < 10) return;
+            this.northeast = new QuadTree({ x: x + w, y: y, width: w, height: h }, this.capacity);
+            this.northwest = new QuadTree({ x: x, y: y, width: w, height: h }, this.capacity);
+            this.southeast = new QuadTree({ x: x + w, y: y + h, width: w, height: h }, this.capacity);
+            this.southwest = new QuadTree({ x: x, y: y + h, width: w, height: h }, this.capacity);
+            this.divided = true;
+        } catch (e) {
+            console.error("QuadTree subdivide error:", e);
+        }
+    }
+
+    insert(point) {
+        try {
+            if (!this.contains(point)) return;
+            if (this.points.length < this.capacity && !this.divided) {
+                this.points.push(point);
+            } else {
+                if (!this.divided) this.subdivide();
+                if (this.divided && this.northeast) {
+                    this.northeast.insert(point);
+                    this.northwest.insert(point);
+                    this.southeast.insert(point);
+                    this.southwest.insert(point);
+                }
+            }
+        } catch (e) {
+            console.error("QuadTree insert error:", e);
+        }
+    }
+
+    contains(point) {
+        try {
+            return (
+                point.x >= this.boundary.x &&
+                point.x < this.boundary.x + this.boundary.width &&
+                point.y >= this.boundary.y &&
+                point.y < this.boundary.y + this.boundary.height
+            );
+        } catch (e) {
+            console.error("QuadTree contains error:", e);
+            return false;
+        }
+    }
+
+    query(range, found = []) {
+        try {
+            if (!this.intersects(range)) return found;
+            for (let p of this.points) {
+                if (
+                    p.x >= range.x &&
+                    p.x < range.x + range.width &&
+                    p.y >= range.y &&
+                    p.y < range.y + range.height
+                ) {
+                    found.push(p);
+                }
+            }
+            if (this.divided && this.northeast) {
+                this.northeast.query(range, found);
+                this.northwest.query(range, found);
+                this.southeast.query(range, found);
+                this.southwest.query(range, found);
+            }
+            return found;
+        } catch (e) {
+            console.error("QuadTree query error:", e);
+            return found;
+        }
+    }
+
+    intersects(range) {
+        try {
+            return !(
+                range.x > this.boundary.x + this.boundary.width ||
+                range.x + range.width < this.boundary.x ||
+                range.y > this.boundary.y + this.boundary.height ||
+                range.y + range.height < this.boundary.y
+            );
+        } catch (e) {
+            console.error("QuadTree intersects error:", e);
+            return false;
+        }
+    }
+
+    clear() {
+        try {
+            this.points = [];
+            if (this.divided) {
+                if (this.northeast) this.northeast.clear();
+                if (this.northwest) this.northwest.clear();
+                if (this.southeast) this.southeast.clear();
+                if (this.southwest) this.southwest.clear();
+                this.northeast = null;
+                this.northwest = null;
+                this.southeast = null;
+                this.southwest = null;
+                this.divided = false;
+            }
+        } catch (e) {
+            console.error("QuadTree clear error:", e);
+        }
+    }
+}
+
+class Man {
+    constructor(x, y) {
+        try {
+            this.x = x;
+            this.y = y;
+            this.size = MAN_SIZE;
+            this.health = MAN_HEALTH;
+            this.selected = false;
+            this.targetPos = null;
+            this.targetGorilla = null;
+            this.attackMoveTarget = null;
+            this.attackCooldown = 0;
+            this.holdPosition = false;
+            this.attackFlash = 0;
+            this.damageTexts = [];
+        } catch (e) {
+            throw new Error("Man constructor error: " + e.message);
+        }
+    }
+
+    show() {
+        try {
+            if (this.health <= 0) return;
+            if (this.selected) {
+                fill(0, 0, 255, 100);
+                ellipse(this.x, this.y, this.size * 2);
+            }
+            stroke(this.selected ? 0 : 139, 69, 19);
+            strokeWeight(3);
+            if (this.attackFlash > 0) {
+                fill(255, 255, 0);
+                this.attackFlash--;
+            } else {
+                fill(this.selected ? 0 : 139, 69, 19);
+            }
+            line(this.x, this.y, this.x, this.y + 10);
+            line(this.x - 5, this.y + 5, this.x + 5, this.y + 5);
+            line(this.x, this.y + 10, this.x - 5, this.y + 15);
+            line(this.x, this.y + 10, this.x + 5, this.y + 15);
+            noStroke();
+            ellipse(this.x, this.y - 5, 5);
+
+            if (this.selected) {
+                let barWidth = 20;
+                let barHeight = 3;
+                let barX = this.x - barWidth / 2;
+                let barY = this.y - this.size - 5;
+                fill(255);
+                rect(barX, barY, barWidth, barHeight);
+                fill(0, 255, 0);
+                rect(barX, barY, map(this.health, 0, MAN_HEALTH, 0, barWidth), barHeight);
+            }
+
+            if (this.targetPos) {
+                stroke(255, 0, 0);
+                line(this.targetPos.x - 5, this.targetPos.y - 5, this.targetPos.x + 5, this.targetPos.y + 5);
+                line(this.targetPos.x + 5, this.targetPos.y - 5, this.targetPos.x - 5, this.targetPos.y + 5);
+                noStroke();
+            }
+
+            for (let i = this.damageTexts.length - 1; i >= 0; i--) {
+                let dt = this.damageTexts[i];
+                fill(255, 0, 0, map(dt.timer, 0, DAMAGE_TEXT_DURATION, 0, 255));
+                textSize(12 * textSizeFactor);
+                text(dt.amount, this.x, this.y - dt.timer * 0.5);
+                dt.timer--;
+                if (dt.timer <= 0) this.damageTexts.splice(i, 1);
+            }
+        } catch (e) {
+            console.error("Man show error:", e);
+        }
+    }
+
+    move() {
+        try {
+            if (this.health <= 0 || this.holdPosition) return;
+
+            if (!this.targetGorilla || this.targetGorilla.health <= 0) {
+                let nearby = quadTree.query({
+                    x: this.x - MAN_ATTACK_RANGE,
+                    y: this.y - MAN_ATTACK_RANGE,
+                    width: MAN_ATTACK_RANGE * 2,
+                    height: MAN_ATTACK_RANGE * 2
+                });
+                for (let item of nearby) {
+                    if (item.data instanceof Gorilla && item.data.health > 0) {
+                        this.targetGorilla = item.data;
+                        this.targetPos = null;
+                        this.attackMoveTarget = null;
+                        break;
+                    }
+                }
+            }
+
+            if (this.attackMoveTarget) {
+                let nearby = quadTree.query({
+                    x: this.x - MAN_ATTACK_RANGE,
+                    y: this.y - MAN_ATTACK_RANGE,
+                    width: MAN_ATTACK_RANGE * 2,
+                    height: MAN_ATTACK_RANGE * 2
+                });
+                for (let item of nearby) {
+                    if (item.data instanceof Gorilla && item.data.health > 0) {
+                        this.targetGorilla = item.data;
+                        this.targetPos = null;
+                        this.attackMoveTarget = null;
+                        break;
+                    }
+                }
+                if (!this.targetGorilla) {
+                    this.targetPos = this.attackMoveTarget.copy();
+                }
+            }
+
+            if (this.targetGorilla && this.targetGorilla.health > 0) {
+                this.targetPos = createVector(this.targetGorilla.x, this.targetGorilla.y);
+            } else if (this.targetGorilla && this.targetGorilla.health <= 0) {
+                this.targetGorilla = null;
+                this.targetPos = null;
+            }
+
+            if (!this.targetPos) return;
+
+            let d = dist(this.x, this.y, this.targetPos.x, this.targetPos.y);
+            if (this.targetGorilla && d <= MAN_ATTACK_RANGE) {
+                this.targetPos = null;
+                return;
+            } else if (!this.targetGorilla && d < this.size / 2) {
+                this.targetPos = null;
+                return;
+            }
+
+            let desired = p5.Vector.sub(this.targetPos, createVector(this.x, this.y));
+            desired.setMag(MAN_SPEED / 60);
+            let velocity = desired.copy();
+
+            let avoidance = createVector(0, 0);
+            let count = 0;
+            for (let obs of obstacles) {
+                let d = dist(this.x, this.y, obs.x, obs.y);
+                if (d < LOOKAHEAD_DISTANCE && d > 0) {
+                    let diff = createVector(this.x - obs.x, this.y - obs.y);
+                    let strength = (LOOKAHEAD_DISTANCE - d) / LOOKAHEAD_DISTANCE;
+                    diff.setMag(MAN_SPEED / 60 * strength);
+                    avoidance.add(diff);
+                    count++;
+                }
+            }
+            if (count > 0) {
+                avoidance.div(count);
+                velocity.lerp(avoidance, 0.3);
+            }
+
+            let separation = createVector(0, 0);
+            let sepCount = 0;
+            let nearby = quadTree.query({
+                x: this.x - MAN_SIZE,
+                y: this.y - MAN_SIZE,
+                width: MAN_SIZE * 2,
+                height: MAN_SIZE * 2
+            });
+            for (let item of nearby) {
+                if (item.data !== this && item.data instanceof Man && item.data.health > 0) {
+                    let d = dist(this.x, this.y, item.data.x, item.data.y);
+                    if (d < MAN_SIZE && d > 0) {
+                        let diff = createVector(this.x - item.data.x, this.y - item.data.y);
+                        diff.div(d);
+                        separation.add(diff);
+                        sepCount++;
+                    }
+                }
+            }
+            if (sepCount > 0) {
+                separation.div(sepCount);
+                separation.setMag(MAN_SPEED / 60 * 0.5);
+                velocity.lerp(separation, 0.2);
+            }
+
+            for (let item of nearby) {
+                if (item.data instanceof Gorilla) {
+                    let d = dist(this.x, this.y, item.data.x, item.data.y);
+                    if (item.data === this.targetGorilla) {
+                        if (d < MAN_ATTACK_RANGE / 2 && d > 0) {
+                            let diff = createVector(this.x - item.data.x, this.y - item.data.y);
+                            diff.div(d);
+                            diff.mult(MAN_SPEED / 60 * 0.2);
+                            velocity.lerp(diff, 0.1);
+                        }
+                    } else {
+                        if (d < MAN_SIZE + GORILLA_SIZE / 2 && d > 0) {
+                            let diff = createVector(this.x - item.data.x, this.y - item.data.y);
+                            diff.div(d);
+                            diff.mult(MAN_SPEED / 60);
+                            velocity.lerp(diff, 0.2);
+                        }
+                    }
+                }
+            }
+
+            if (velocity.mag() > MAN_SPEED / 60) {
+                velocity.setMag(MAN_SPEED / 60);
+            }
+            this.x += velocity.x;
+            this.y += velocity.y;
+            this.x = constrain(this.x, this.size / 2, width - this.size / 2);
+            this.y = constrain(this.y, this.size / 2, height - this.size / 2);
+            quadTreeNeedsUpdate = true;
+        } catch (e) {
+            console.error("Man move error:", e);
+        }
+    }
+
+    attack() {
+        try {
+            if (this.health <= 0 || this.attackCooldown > 0) {
+                this.attackCooldown--;
+                return;
+            }
+            let nearby = quadTree.query({
+                x: this.x - MAN_ATTACK_RANGE,
+                y: this.y - MAN_ATTACK_RANGE,
+                width: MAN_ATTACK_RANGE * 2,
+                height: MAN_ATTACK_RANGE * 2
+            });
+            for (let item of nearby) {
+                if (item.data instanceof Gorilla && item.data.health > 0) {
+                    item.data.takeDamage(MAN_DAMAGE);
+                    this.attackCooldown = MAN_ATTACK_COOLDOWN;
+                    this.attackFlash = 5;
+                    this.targetGorilla = item.data;
+                    break;
+                }
+            }
+        } catch (e) {
+            console.error("Man attack error:", e);
+        }
+    }
+
+    takeDamage(amount) {
+        try {
+            this.health = max(0, this.health - amount);
+            this.damageTexts.push({ amount: amount, timer: DAMAGE_TEXT_DURATION });
+        } catch (e) {
+            console.error("Man takeDamage error:", e);
+        }
+    }
+}
+
+class Gorilla {
+    constructor(x, y, type) {
+        try {
+            if (!GORILLA_HEALTH[type]) {
+                throw new Error(`Invalid gorilla type: ${type}`);
+            }
+            this.x = x;
+            this.y = y;
+            this.size = GORILLA_SIZE;
+            this.type = type;
+            this.health = GORILLA_HEALTH[type];
+            this.speed = GORILLA_SPEED[type];
+            this.direction = 0;
+            this.isAggressive = true;
+            this.attackCooldown = 0;
+            this.attackFlash = 0;
+            this.damageTexts = [];
+        } catch (e) {
+            throw new Error("Gorilla constructor error: " + e.message);
+        }
+    }
+
+    show() {
+        try {
+            if (this.health <= 0) return;
+            push();
+            translate(this.x, this.y);
+            rotate(this.direction + HALF_PI);
+            if (this.attackFlash > 0) {
+                fill(255, 255, 0);
+                this.attackFlash--;
+            } else {
+                fill(this.type === 'tank' ? 80 : 100);
+            }
+            ellipse(0, 0, this.size);
+            fill(0);
+            ellipse(0, -10, this.size / 2);
+            fill(255);
+            ellipse(-10, -15, 5);
+            ellipse(10, -15, 5);
+            pop();
+
+            let barWidth = 40;
+            let barHeight = 5;
+            let barX = this.x - barWidth / 2;
+            let barY = this.y - this.size / 2 - 10;
+            fill(255);
+            rect(barX, barY, barWidth, barHeight);
+            fill(255, 0, 0);
+            rect(barX, barY, map(this.health, 0, GORILLA_HEALTH[this.type], 0, barWidth), barHeight);
+
+            for (let i = this.damageTexts.length - 1; i >= 0; i--) {
+                let dt = this.damageTexts[i];
+                fill(255, 0, 0, map(dt.timer, 0, DAMAGE_TEXT_DURATION, 0, 255));
+                textSize(12 * textSizeFactor);
+                text(dt.amount, this.x, this.y - dt.timer * 0.5);
+                dt.timer--;
+                if (dt.timer <= 0) this.damageTexts.splice(i, 1);
+            }
+        } catch (e) {
+            console.error("Gorilla show error:", e);
+        }
+    }
+
+    update() {
+        try {
+            if (this.health <= 0) return;
+            let velocity = createVector(0, 0);
+            if (men.length > 0) {
+                let nearest = men.reduce((closest, m) =>
+                    m.health > 0 && (!closest || m.health < closest.health || (m.health === closest.health && dist(this.x, this.y, m.x, m.y) < dist(this.x, this.y, closest.x, closest.y))) ? m : closest, null);
+                if (nearest) {
+                    let targetAngle = atan2(nearest.y - this.y, nearest.x - this.x);
+                    let angleDiff = ((targetAngle - this.direction + PI) % TWO_PI) - PI;
+                    let turn = constrain(angleDiff, -GORILLA_TURN_SPEED, GORILLA_TURN_SPEED);
+                    this.direction += turn;
+                    this.direction = (this.direction + TWO_PI) % TWO_PI;
+                }
+
+                let engaged = quadTree.query({
+                    x: this.x - (this.size / 2 + GORILLA_ATTACK_RANGE),
+                    y: this.y - (this.size / 2 + GORILLA_ATTACK_RANGE),
+                    width: (this.size / 2 + GORILLA_ATTACK_RANGE) * 2,
+                    height: (this.size / 2 + GORILLA_ATTACK_RANGE) * 2
+                }).some(item => item.data instanceof Man && item.data.health > 0);
+                if (engaged) {
+                    // Stay and fight
+                } else {
+                    let nearbyMen = quadTree.query({
+                        x: this.x - 100,
+                        y: this.y - 100,
+                        width: 200,
+                        height: 200
+                    }).filter(item => item.data instanceof Man && item.data.health > 0);
+                    let fleeThreshold = max(5, 10 - currentLevel);
+                    if (nearbyMen.length > fleeThreshold) {
+                        let centroid = { x: 0, y: 0 };
+                        nearbyMen.forEach(item => {
+                            centroid.x += item.data.x;
+                            centroid.y += item.data.y;
+                        });
+                        centroid.x /= nearbyMen.length;
+                        centroid.y /= nearbyMen.length;
+                        let runAngle = atan2(this.y - centroid.y, this.x - centroid.x);
+                        velocity.add(p5.Vector.fromAngle(runAngle, this.speed / 60));
+                    } else if (nearest) {
+                        velocity.add(p5.Vector.fromAngle(this.direction, this.speed / 60));
+                    }
+                }
+
+                let gorillaSeparation = createVector(0, 0);
+                let gorillaCount = 0;
+                let nearby = quadTree.query({
+                    x: this.x - GORILLA_SIZE,
+                    y: this.y - GORILLA_SIZE,
+                    width: GORILLA_SIZE * 2,
+                    height: GORILLA_SIZE * 2
+                });
+                for (let item of nearby) {
+                    if (item.data !== this && item.data instanceof Gorilla && item.data.health > 0) {
+                        let d = dist(this.x, this.y, item.data.x, item.data.y);
+                        if (d < GORILLA_SIZE && d > 0) {
+                            let diff = createVector(this.x - item.data.x, this.y - item.data.y);
+                            diff.div(d);
+                            gorillaSeparation.add(diff);
+                            gorillaCount++;
+                        }
+                    }
+                }
+                if (gorillaCount > 0) {
+                    gorillaSeparation.div(gorillaCount);
+                    gorillaSeparation.setMag(this.speed / 60);
+                    velocity.add(gorillaSeparation);
+                }
+            }
+
+            let newX = this.x + velocity.x;
+            let newY = this.y + velocity.y;
+            for (let obs of obstacles) {
+                let d = dist(newX, newY, obs.x, obs.y);
+                if (d < this.size / 2 + obs.r) {
+                    let closest = closestPointOnCircle(obs.x, obs.y, obs.r, newX, newY);
+                    let normal = createVector(newX - closest.x, newY - closest.y);
+                    if (normal.mag() > 0) {
+                        normal.normalize();
+                        let dot = velocity.dot(normal);
+                        if (dot > 0) {
+                            velocity.sub(p5.Vector.mult(normal, dot));
+                        }
+                    }
+                }
+            }
+
+            if (velocity.mag() > this.speed / 60) {
+                velocity.setMag(this.speed / 60);
+            }
+            this.x += velocity.x;
+            this.y += velocity.y;
+            this.x = constrain(this.x, this.size / 2, width - this.size / 2);
+            this.y = constrain(this.y, this.size / 2, height - this.size / 2);
+            if (this.attackCooldown > 0) this.attackCooldown--;
+            quadTreeNeedsUpdate = true;
+        } catch (e) {
+            console.error("Gorilla update error:", e);
+        }
+    }
+
+    attack() {
+        try {
+            if (this.health <= 0 || this.attackCooldown > 0) return;
+            let nearbyMen = [];
+            let nearby = quadTree.query({
+                x: this.x - GORILLA_ATTACK_RANGE,
+                y: this.y - GORILLA_ATTACK_RANGE,
+                width: GORILLA_ATTACK_RANGE * 2,
+                height: GORILLA_ATTACK_RANGE * 2
+            });
+            for (let item of nearby) {
+                if (item.data instanceof Man && item.data.health > 0) {
+                    let d = dist(this.x, this.y, item.data.x, item.data.y);
+                    if (d < GORILLA_ATTACK_RANGE) {
+                        let toMan = createVector(item.data.x - this.x, item.data.y - this.y);
+                        let angle = degrees(toMan.heading() - this.direction);
+                        if (abs(angle) < 45) {
+                            nearbyMen.push({ man: item.data, dist: d });
+                        }
+                    }
+                }
+            }
+            nearbyMen.sort((a, b) => a.dist - b.dist);
+            if (nearbyMen.length > 0) {
+                for (let i = 0; i < min(2, nearbyMen.length); i++) {
+                    nearbyMen[i].man.takeDamage(GORILLA_DAMAGE);
+                    this.attackFlash = 5;
+                }
+                this.attackCooldown = GORILLA_ATTACK_COOLDOWN;
+            }
+        } catch (e) {
+            console.error("Gorilla attack error:", e);
+        }
+    }
+
+    takeDamage(amount) {
+        try {
+            this.health = max(0, this.health - amount);
+            this.damageTexts.push({ amount: amount, timer: DAMAGE_TEXT_DURATION });
+        } catch (e) {
+            console.error("Gorilla takeDamage error:", e);
+        }
+    }
+}
+</script>
+</body>
+</html>
